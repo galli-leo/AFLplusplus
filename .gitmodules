@@ -7,4 +7,4 @@
 	branch = stable
 [submodule "qemu_mode/qemuafl"]
 	path = qemu_mode/qemuafl
-	url = git@github.com:galli-leo/qemuafl.git
+	url = https://github.com/galli-leo/qemuafl.git
