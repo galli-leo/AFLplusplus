@@ -179,6 +179,8 @@ void load_stats_file(afl_state_t *afl) {
 
   }
 
+  if (afl->unique_crashes) { write_crash_readme(afl); }
+
   return;
 
 }
@@ -262,6 +264,7 @@ void write_stats_file(afl_state_t *afl, u32 t_bytes, double bitmap_cvg,
           "peak_rss_mb       : %lu\n"
           "cpu_affinity      : %d\n"
           "edges_found       : %u\n"
+          "total_edges       : %u\n"
           "var_byte_count    : %u\n"
           "havoc_expansion   : %u\n"
           "testcache_size    : %llu\n"
@@ -301,10 +304,10 @@ void write_stats_file(afl_state_t *afl, u32 t_bytes, double bitmap_cvg,
 #else
           -1,
 #endif
-          t_bytes, afl->var_byte_count, afl->expand_havoc,
-          afl->q_testcase_cache_size, afl->q_testcase_cache_count,
-          afl->q_testcase_evictions, afl->use_banner,
-          afl->unicorn_mode ? "unicorn" : "",
+          t_bytes, afl->fsrv.real_map_size, afl->var_byte_count,
+          afl->expand_havoc, afl->q_testcase_cache_size,
+          afl->q_testcase_cache_count, afl->q_testcase_evictions,
+          afl->use_banner, afl->unicorn_mode ? "unicorn" : "",
           afl->fsrv.qemu_mode ? "qemu " : "",
           afl->non_instrumented_mode ? " non_instrumented " : "",
           afl->no_forkserver ? "no_fsrv " : "", afl->crash_mode ? "crash " : "",
@@ -324,7 +327,7 @@ void write_stats_file(afl_state_t *afl, u32 t_bytes, double bitmap_cvg,
 
     u32 i = 0;
     fprintf(f, "virgin_bytes     :");
-    for (i = 0; i < afl->fsrv.map_size; i++) {
+    for (i = 0; i < afl->fsrv.real_map_size; i++) {
 
       if (afl->virgin_bits[i] != 0xff) {
 
@@ -336,7 +339,7 @@ void write_stats_file(afl_state_t *afl, u32 t_bytes, double bitmap_cvg,
 
     fprintf(f, "\n");
     fprintf(f, "var_bytes        :");
-    for (i = 0; i < afl->fsrv.map_size; i++) {
+    for (i = 0; i < afl->fsrv.real_map_size; i++) {
 
       if (afl->var_bytes[i]) { fprintf(f, " %u", i); }
 
@@ -366,7 +369,8 @@ void maybe_update_plot_file(afl_state_t *afl, u32 t_bytes, double bitmap_cvg,
                  afl->plot_prev_uh == afl->unique_hangs &&
                  afl->plot_prev_md == afl->max_depth &&
                  afl->plot_prev_ed == afl->fsrv.total_execs) ||
-                !afl->queue_cycle || get_cur_time() - afl->start_time <= 60))) {
+                !afl->queue_cycle ||
+                get_cur_time() - afl->start_time <= 60000))) {
 
     return;
 
@@ -384,14 +388,14 @@ void maybe_update_plot_file(afl_state_t *afl, u32 t_bytes, double bitmap_cvg,
 
   /* Fields in the file:
 
-     unix_time, afl->cycles_done, cur_path, paths_total, paths_not_fuzzed,
+     relative_time, afl->cycles_done, cur_path, paths_total, paths_not_fuzzed,
      favored_not_fuzzed, unique_crashes, unique_hangs, max_depth,
      execs_per_sec, edges_found */
 
   fprintf(afl->fsrv.plot_file,
           "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f, %llu, "
           "%u\n",
-          (afl->prev_run_time + get_cur_time() - afl->start_time),
+          ((afl->prev_run_time + get_cur_time() - afl->start_time) / 1000),
           afl->queue_cycle - 1, afl->current_entry, afl->queued_paths,
           afl->pending_not_fuzzed, afl->pending_favored, bitmap_cvg,
           afl->unique_crashes, afl->unique_hangs, afl->max_depth, eps,
@@ -517,7 +521,7 @@ void show_stats(afl_state_t *afl) {
   /* Do some bitmap stats. */
 
   t_bytes = count_non_255_bytes(afl, afl->virgin_bits);
-  t_byte_ratio = ((double)t_bytes * 100) / afl->fsrv.map_size;
+  t_byte_ratio = ((double)t_bytes * 100) / afl->fsrv.real_map_size;
 
   if (likely(t_bytes) && unlikely(afl->var_byte_count)) {
 
@@ -544,7 +548,7 @@ void show_stats(afl_state_t *afl) {
 
   if (unlikely(afl->afl_env.afl_statsd)) {
 
-    if (unlikely(afl->force_ui_update && cur_ms - afl->statsd_last_send_ms >
+    if (unlikely(afl->force_ui_update || cur_ms - afl->statsd_last_send_ms >
                                              STATSD_UPDATE_SEC * 1000)) {
 
       /* reset counter, even if send failed. */
@@ -569,6 +573,16 @@ void show_stats(afl_state_t *afl) {
 
   if (unlikely(!afl->non_instrumented_mode && afl->cycles_wo_finds > 100 &&
                !afl->pending_not_fuzzed && afl->afl_env.afl_exit_when_done)) {
+
+    afl->stop_soon = 2;
+
+  }
+
+  /* AFL_EXIT_ON_TIME. */
+
+  if (unlikely(afl->last_path_time && !afl->non_instrumented_mode &&
+               afl->afl_env.afl_exit_on_time &&
+               (cur_ms - afl->last_path_time) > afl->exit_on_time)) {
 
     afl->stop_soon = 2;
 
@@ -753,9 +767,9 @@ void show_stats(afl_state_t *afl) {
                 "   uniq hangs : " cRST "%-6s" bSTG         bV "\n",
        time_tmp, tmp);
 
-  SAYF(bVR bH bSTOP                                          cCYA
-       " cycle progress " bSTG bH10 bH5 bH2 bH2 bHB bH bSTOP cCYA
-       " map coverage " bSTG bH bHT bH20 bH2                 bVL "\n");
+  SAYF(bVR bH bSTOP                                              cCYA
+       " cycle progress " bSTG bH10 bH5 bH2 bH2 bH2 bHB bH bSTOP cCYA
+       " map coverage" bSTG bHT bH20 bH2                         bVL "\n");
 
   /* This gets funny because we want to print several variable-length variables
      together, but then cram them into a fixed-width field - so we need to
@@ -765,13 +779,13 @@ void show_stats(afl_state_t *afl) {
           afl->queue_cur->favored ? "." : "*", afl->queue_cur->fuzz_level,
           ((double)afl->current_entry * 100) / afl->queued_paths);
 
-  SAYF(bV bSTOP "  now processing : " cRST "%-16s " bSTG bV bSTOP, tmp);
+  SAYF(bV bSTOP "  now processing : " cRST "%-18s " bSTG bV bSTOP, tmp);
 
   sprintf(tmp, "%0.02f%% / %0.02f%%",
-          ((double)afl->queue_cur->bitmap_size) * 100 / afl->fsrv.map_size,
+          ((double)afl->queue_cur->bitmap_size) * 100 / afl->fsrv.real_map_size,
           t_byte_ratio);
 
-  SAYF("    map density : %s%-21s" bSTG bV "\n",
+  SAYF("    map density : %s%-19s" bSTG bV "\n",
        t_byte_ratio > 70
            ? cLRD
            : ((t_bytes < 200 && !afl->non_instrumented_mode) ? cPIN : cRST),
@@ -780,23 +794,23 @@ void show_stats(afl_state_t *afl) {
   sprintf(tmp, "%s (%0.02f%%)", u_stringify_int(IB(0), afl->cur_skipped_paths),
           ((double)afl->cur_skipped_paths * 100) / afl->queued_paths);
 
-  SAYF(bV bSTOP " paths timed out : " cRST "%-16s " bSTG bV, tmp);
+  SAYF(bV bSTOP " paths timed out : " cRST "%-18s " bSTG bV, tmp);
 
   sprintf(tmp, "%0.02f bits/tuple", t_bytes ? (((double)t_bits) / t_bytes) : 0);
 
-  SAYF(bSTOP " count coverage : " cRST "%-21s" bSTG bV "\n", tmp);
+  SAYF(bSTOP " count coverage : " cRST "%-19s" bSTG bV "\n", tmp);
 
-  SAYF(bVR bH bSTOP                                         cCYA
-       " stage progress " bSTG bH10 bH5 bH2 bH2 bX bH bSTOP cCYA
-       " findings in depth " bSTG bH10 bH5 bH2 bH2          bVL "\n");
+  SAYF(bVR bH bSTOP                                             cCYA
+       " stage progress " bSTG bH10 bH5 bH2 bH2 bH2 bX bH bSTOP cCYA
+       " findings in depth " bSTG bH10 bH5 bH2                  bVL "\n");
 
   sprintf(tmp, "%s (%0.02f%%)", u_stringify_int(IB(0), afl->queued_favored),
           ((double)afl->queued_favored) * 100 / afl->queued_paths);
 
   /* Yeah... it's still going on... halp? */
 
-  SAYF(bV bSTOP "  now trying : " cRST "%-20s " bSTG bV bSTOP
-                " favored paths : " cRST "%-22s" bSTG   bV "\n",
+  SAYF(bV bSTOP "  now trying : " cRST "%-22s " bSTG bV bSTOP
+                " favored paths : " cRST "%-20s" bSTG   bV "\n",
        afl->stage_name, tmp);
 
   if (!afl->stage_max) {
@@ -811,12 +825,12 @@ void show_stats(afl_state_t *afl) {
 
   }
 
-  SAYF(bV bSTOP " stage execs : " cRST "%-21s" bSTG bV bSTOP, tmp);
+  SAYF(bV bSTOP " stage execs : " cRST "%-23s" bSTG bV bSTOP, tmp);
 
   sprintf(tmp, "%s (%0.02f%%)", u_stringify_int(IB(0), afl->queued_with_cov),
           ((double)afl->queued_with_cov) * 100 / afl->queued_paths);
 
-  SAYF("  new edges on : " cRST "%-22s" bSTG bV "\n", tmp);
+  SAYF("  new edges on : " cRST "%-20s" bSTG bV "\n", tmp);
 
   sprintf(tmp, "%s (%s%s unique)", u_stringify_int(IB(0), afl->total_crashes),
           u_stringify_int(IB(1), afl->unique_crashes),
@@ -824,14 +838,14 @@ void show_stats(afl_state_t *afl) {
 
   if (afl->crash_mode) {
 
-    SAYF(bV bSTOP " total execs : " cRST "%-20s " bSTG bV bSTOP
-                  "   new crashes : %s%-22s" bSTG         bV "\n",
+    SAYF(bV bSTOP " total execs : " cRST "%-22s " bSTG bV bSTOP
+                  "   new crashes : %s%-20s" bSTG         bV "\n",
          u_stringify_int(IB(0), afl->fsrv.total_execs), crash_color, tmp);
 
   } else {
 
-    SAYF(bV bSTOP " total execs : " cRST "%-20s " bSTG bV bSTOP
-                  " total crashes : %s%-22s" bSTG         bV "\n",
+    SAYF(bV bSTOP " total execs : " cRST "%-22s " bSTG bV bSTOP
+                  " total crashes : %s%-20s" bSTG         bV "\n",
          u_stringify_int(IB(0), afl->fsrv.total_execs), crash_color, tmp);
 
   }
@@ -843,12 +857,12 @@ void show_stats(afl_state_t *afl) {
     sprintf(tmp, "%s/sec (%s)", u_stringify_float(IB(0), afl->stats_avg_exec),
             afl->stats_avg_exec < 20 ? "zzzz..." : "slow!");
 
-    SAYF(bV bSTOP "  exec speed : " cLRD "%-20s ", tmp);
+    SAYF(bV bSTOP "  exec speed : " cLRD "%-22s ", tmp);
 
   } else {
 
     sprintf(tmp, "%s/sec", u_stringify_float(IB(0), afl->stats_avg_exec));
-    SAYF(bV bSTOP "  exec speed : " cRST "%-20s ", tmp);
+    SAYF(bV bSTOP "  exec speed : " cRST "%-22s ", tmp);
 
   }
 
@@ -856,13 +870,12 @@ void show_stats(afl_state_t *afl) {
           u_stringify_int(IB(1), afl->unique_tmouts),
           (afl->unique_hangs >= KEEP_UNIQUE_HANG) ? "+" : "");
 
-  SAYF(bSTG bV bSTOP "  total tmouts : " cRST "%-22s" bSTG bV "\n", tmp);
+  SAYF(bSTG bV bSTOP "  total tmouts : " cRST "%-20s" bSTG bV "\n", tmp);
 
   /* Aaaalmost there... hold on! */
 
-  SAYF(bVR bH cCYA                                                     bSTOP
-       " fuzzing strategy yields " bSTG bH10 bHT bH10 bH5 bHB bH bSTOP cCYA
-       " path geometry " bSTG bH5 bH2 bVL "\n");
+  SAYF(bVR bH cCYA bSTOP " fuzzing strategy yields " bSTG bH10 bH2 bHT bH10 bH2
+           bH bHB bH bSTOP cCYA " path geometry " bSTG bH5 bH2 bVL "\n");
 
   if (unlikely(afl->custom_only)) {
 
@@ -1004,9 +1017,10 @@ void show_stats(afl_state_t *afl) {
   if (unlikely(afl->afl_env.afl_custom_mutator_library)) {
 
     strcat(tmp, " ");
-    strcat(tmp, u_stringify_int(IB(2), afl->stage_finds[STAGE_PYTHON]));
+    strcat(tmp, u_stringify_int(IB(2), afl->stage_finds[STAGE_CUSTOM_MUTATOR]));
     strcat(tmp, "/");
-    strcat(tmp, u_stringify_int(IB(3), afl->stage_cycles[STAGE_PYTHON]));
+    strcat(tmp,
+           u_stringify_int(IB(3), afl->stage_cycles[STAGE_CUSTOM_MUTATOR]));
     strcat(tmp, ",");
 
   } else {

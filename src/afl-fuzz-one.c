@@ -73,7 +73,7 @@ static int select_algorithm(afl_state_t *afl, u32 max_algorithm) {
 /* Helper to choose random block len for block operations in fuzz_one().
    Doesn't return zero, provided that max_len is > 0. */
 
-static u32 choose_block_len(afl_state_t *afl, u32 limit) {
+static inline u32 choose_block_len(afl_state_t *afl, u32 limit) {
 
   u32 min_value, max_value;
   u32 rlim = MIN(afl->queue_cycle, (u32)3);
@@ -561,8 +561,9 @@ u8 fuzz_one_original(afl_state_t *afl) {
 
       if (afl->cmplog_lvl == 3 ||
           (afl->cmplog_lvl == 2 && afl->queue_cur->tc_ref) ||
+          afl->queue_cur->favored ||
           !(afl->fsrv.total_execs % afl->queued_paths) ||
-          get_cur_time() - afl->last_path_time > 300000) {
+          get_cur_time() - afl->last_path_time > 300000) {  // 300 seconds
 
         if (input_to_state_stage(afl, in_buf, out_buf, len)) {
 
@@ -2013,7 +2014,7 @@ havoc_stage:
 
   }
 
-  if (unlikely(get_cur_time() - afl->last_path_time > 5000 &&
+  if (unlikely(get_cur_time() - afl->last_path_time > 5000 /* 5 seconds */ &&
                afl->ready_for_splicing_count > 1)) {
 
     /* add expensive havoc cases here if there is no findings in the last 5s */
@@ -2056,7 +2057,7 @@ havoc_stage:
               temp_len = new_len;
               if (out_buf != custom_havoc_buf) {
 
-                afl_realloc(AFL_BUF_PARAM(out), temp_len);
+                out_buf = afl_realloc(AFL_BUF_PARAM(out), temp_len);
                 if (unlikely(!afl->out_buf)) { PFATAL("alloc"); }
                 memcpy(out_buf, custom_havoc_buf, temp_len);
 
@@ -2101,7 +2102,7 @@ havoc_stage:
 
         case 8 ... 9: {
 
-          /* Set word to interesting value, randomly choosing endian. */
+          /* Set word to interesting value, little endian. */
 
           if (temp_len < 2) { break; }
 
@@ -2118,7 +2119,7 @@ havoc_stage:
 
         case 10 ... 11: {
 
-          /* Set word to interesting value, randomly choosing endian. */
+          /* Set word to interesting value, big endian. */
 
           if (temp_len < 2) { break; }
 
@@ -2135,7 +2136,7 @@ havoc_stage:
 
         case 12 ... 13: {
 
-          /* Set dword to interesting value, randomly choosing endian. */
+          /* Set dword to interesting value, little endian. */
 
           if (temp_len < 4) { break; }
 
@@ -2152,7 +2153,7 @@ havoc_stage:
 
         case 14 ... 15: {
 
-          /* Set dword to interesting value, randomly choosing endian. */
+          /* Set dword to interesting value, big endian. */
 
           if (temp_len < 4) { break; }
 
@@ -2861,6 +2862,7 @@ abandon_entry:
 
       --afl->pending_not_fuzzed;
       afl->queue_cur->was_fuzzed = 1;
+      afl->reinit_table = 1;
       if (afl->queue_cur->favored) { --afl->pending_favored; }
 
     }
@@ -3010,13 +3012,13 @@ static u8 mopt_common_fuzzing(afl_state_t *afl, MOpt_globals_t MOpt_globals) {
     u8 res = trim_case(afl, afl->queue_cur, in_buf);
     orig_in = in_buf = queue_testcase_get(afl, afl->queue_cur);
 
-    if (res == FSRV_RUN_ERROR) {
+    if (unlikely(res == FSRV_RUN_ERROR)) {
 
       FATAL("Unable to execute target application");
 
     }
 
-    if (afl->stop_soon) {
+    if (unlikely(afl->stop_soon)) {
 
       ++afl->cur_skipped_paths;
       goto abandon_entry;
@@ -3060,7 +3062,7 @@ static u8 mopt_common_fuzzing(afl_state_t *afl, MOpt_globals_t MOpt_globals) {
       if (afl->cmplog_lvl == 3 ||
           (afl->cmplog_lvl == 2 && afl->queue_cur->tc_ref) ||
           !(afl->fsrv.total_execs % afl->queued_paths) ||
-          get_cur_time() - afl->last_path_time > 300000) {
+          get_cur_time() - afl->last_path_time > 300000) {  // 300 seconds
 
         if (input_to_state_stage(afl, in_buf, out_buf, len)) {
 

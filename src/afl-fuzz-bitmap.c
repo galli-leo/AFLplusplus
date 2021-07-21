@@ -397,7 +397,7 @@ u8 *describe_op(afl_state_t *afl, u8 new_bits, size_t max_description_len) {
 
 /* Write a message accompanying the crash directory :-) */
 
-static void write_crash_readme(afl_state_t *afl) {
+void write_crash_readme(afl_state_t *afl) {
 
   u8    fn[PATH_MAX];
   s32   fd;
@@ -551,18 +551,17 @@ save_if_interesting(afl_state_t *afl, void *mem, u32 len, u8 fault) {
 
     }
 
-    if (cksum)
-      afl->queue_top->exec_cksum = cksum;
-    else
-      cksum = afl->queue_top->exec_cksum =
-          hash64(afl->fsrv.trace_bits, afl->fsrv.map_size, HASH_CONST);
-
-    if (afl->schedule >= FAST && afl->schedule <= RARE) {
+    /* AFLFast schedule? update the new queue entry */
+    if (cksum) {
 
       afl->queue_top->n_fuzz_entry = cksum % N_FUZZ_SIZE;
       afl->n_fuzz[afl->queue_top->n_fuzz_entry] = 1;
 
     }
+
+    /* due to classify counts we have to recalculate the checksum */
+    cksum = afl->queue_top->exec_cksum =
+        hash64(afl->fsrv.trace_bits, afl->fsrv.map_size, HASH_CONST);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */

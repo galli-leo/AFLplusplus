@@ -108,9 +108,6 @@ make fairly broad use of environmental variables instead:
   - Setting `AFL_QUIET` will prevent afl-cc and afl-as banners from being
     displayed during compilation, in case you find them distracting.
 
-  - Setting `AFL_CAL_FAST` will speed up the initial calibration, if the
-    application is very slow.
-
 ## 2) Settings for LLVM and LTO: afl-clang-fast / afl-clang-fast++ / afl-clang-lto / afl-clang-lto++
 
 The native instrumentation helpers (instrumentation and gcc_plugin) accept a subset
@@ -231,6 +228,12 @@ Then there are a few specific features that are only available in instrumentatio
 
   See [instrumentation/README.instrument_list.md](../instrumentation/README.instrument_list.md) for more information.
 
+### Thread safe instrumentation counters (in all modes)
+
+   - Setting `AFL_LLVM_THREADSAFE_INST` will inject code that implements thread
+     safe counters. The overhead is a little bit higher compared to the older
+     non-thread safe case. Note that this disables neverzero (see below).
+
 ### NOT_ZERO
 
    - Setting `AFL_LLVM_NOT_ZERO=1` during compilation will use counters
@@ -284,6 +287,10 @@ checks or alter some of the more exotic semantics of the tool:
     normally indicated by the cycle counter in the UI turning green. May be
     convenient for some types of automated jobs.
 
+  - `AFL_EXIT_ON_TIME` Causes afl-fuzz to terminate if no new paths were 
+    found within a specified period of time (in seconds). May be convenient 
+    for some types of automated jobs.
+
   - `AFL_EXIT_ON_SEED_ISSUES` will restore the vanilla afl-fuzz behaviour
     which does not allow crashes or timeout seeds in the initial -i corpus.
 
@@ -308,13 +315,11 @@ checks or alter some of the more exotic semantics of the tool:
     on Linux systems. This slows things down, but lets you run more instances
     of afl-fuzz than would be prudent (if you really want to).
 
+  - Setting `AFL_TRY_AFFINITY` tries to attempt binding to a specific CPU core
+    on Linux systems, but will not terminate if that fails.
+
   - Setting `AFL_NO_AUTODICT` will not load an LTO generated auto dictionary
     that is compiled into the target.
-
-  - `AFL_SKIP_CRASHES` causes AFL++ to tolerate crashing files in the input
-    queue. This can help with rare situations where a program crashes only
-    intermittently, but it's not really recommended under normal operating
-    conditions.
 
   - Setting `AFL_HANG_TMOUT` allows you to specify a different timeout for
     deciding if a particular test case is a "hang". The default is 1 second
@@ -351,6 +356,7 @@ checks or alter some of the more exotic semantics of the tool:
     and shell scripts; and `AFL_DUMB_FORKSRV` in conjunction with the `-n`
     setting to instruct afl-fuzz to still follow the fork server protocol
     without expecting any instrumentation data in return.
+    Note that this also turns off auto map size detection.
 
   - When running in the `-M` or `-S` mode, setting `AFL_IMPORT_FIRST` causes the
     fuzzer to import test cases from other instances before doing anything
@@ -377,6 +383,7 @@ checks or alter some of the more exotic semantics of the tool:
 
   - `AFL_FAST_CAL` keeps the calibration stage about 2.5x faster (albeit less
     precise), which can help when starting a session against a slow target.
+    `AFL_CAL_FAST` works too.
 
   - The CPU widget shown at the bottom of the screen is fairly simplistic and
     may complain of high load prematurely, especially on systems with low core
@@ -562,6 +569,9 @@ The corpus minimization script offers very little customization:
   - `AFL_ALLOW_TMP` permits this and some other scripts to run in /tmp. This is
     a modest security risk on multi-user systems with rogue users, but should
     be safe on dedicated fuzzing boxes.
+
+  - `AFL_PRINT_FILENAMES` prints each filename to stdout, as it gets processed.
+    This can help when embedding `afl-cmin` or `afl-showmap` in other scripts scripting.
 
 ## 7) Settings for afl-tmin
 

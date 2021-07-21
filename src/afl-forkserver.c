@@ -90,6 +90,7 @@ void afl_fsrv_init(afl_forkserver_t *fsrv) {
   /* exec related stuff */
   fsrv->child_pid = -1;
   fsrv->map_size = get_map_size();
+  fsrv->real_map_size = fsrv->map_size;
   fsrv->use_fauxsrv = false;
   fsrv->last_run_timed_out = false;
   fsrv->debug = false;
@@ -110,6 +111,7 @@ void afl_fsrv_init_dup(afl_forkserver_t *fsrv_to, afl_forkserver_t *from) {
   fsrv_to->init_tmout = from->init_tmout;
   fsrv_to->mem_limit = from->mem_limit;
   fsrv_to->map_size = from->map_size;
+  fsrv_to->real_map_size = from->real_map_size;
   fsrv_to->support_shmem_fuzz = from->support_shmem_fuzz;
   fsrv_to->out_file = from->out_file;
   fsrv_to->dev_urandom_fd = from->dev_urandom_fd;
@@ -416,7 +418,7 @@ void afl_fsrv_start(afl_forkserver_t *fsrv, char **argv,
 
     struct rlimit r;
 
-    if (!fsrv->cmplog_binary && fsrv->qemu_mode == false) {
+    if (!fsrv->cmplog_binary) {
 
       unsetenv(CMPLOG_SHM_ENV_VAR);  // we do not want that in non-cmplog fsrv
 
@@ -450,8 +452,12 @@ void afl_fsrv_start(afl_forkserver_t *fsrv, char **argv,
     /* Dumping cores is slow and can lead to anomalies if SIGKILL is delivered
        before the dump is complete. */
 
-    //    r.rlim_max = r.rlim_cur = 0;
-    //    setrlimit(RLIMIT_CORE, &r);                      /* Ignore errors */
+    if (!fsrv->debug) {
+
+      r.rlim_max = r.rlim_cur = 0;
+      setrlimit(RLIMIT_CORE, &r);                          /* Ignore errors */
+
+    }
 
     /* Isolate the process and configure standard descriptors. If out_file is
        specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
@@ -686,15 +692,15 @@ void afl_fsrv_start(afl_forkserver_t *fsrv, char **argv,
 
         if (!fsrv->map_size) { fsrv->map_size = MAP_SIZE; }
 
-        if (unlikely(tmp_map_size % 64)) {
+        fsrv->real_map_size = tmp_map_size;
 
-          // should not happen
-          WARNF("Target reported non-aligned map size of %u", tmp_map_size);
+        if (tmp_map_size % 64) {
+
           tmp_map_size = (((tmp_map_size + 63) >> 6) << 6);
 
         }
 
-        if (!be_quiet) { ACTF("Target map size: %u", tmp_map_size); }
+        if (!be_quiet) { ACTF("Target map size: %u", fsrv->real_map_size); }
         if (tmp_map_size > fsrv->map_size) {
 
           FATAL(
@@ -1089,7 +1095,7 @@ void afl_fsrv_write_to_testcase(afl_forkserver_t *fsrv, u8 *buf, size_t len) {
 
 #endif
 
-  if (likely(fsrv->use_shmem_fuzz && fsrv->shmem_fuzz)) {
+  if (likely(fsrv->use_shmem_fuzz)) {
 
     if (unlikely(len > MAX_FILE)) len = MAX_FILE;
 
